@@ -104,6 +104,7 @@ impl Vec3 {
 
 pub type Point3 = Vec3;
 
+#[derive(Debug)]
 pub struct Ray {
     origin: Point3,
     direction: Vec3,
@@ -113,4 +114,8 @@ impl Ray {
     pub fn at(&self, t: f32) -> Point3 {
         self.origin + t * self.direction
     }
+}
+
+pub trait Hittable {
+    fn hit(self, ray: Ray) -> Option<f32>;
 }

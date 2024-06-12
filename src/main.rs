@@ -1,8 +1,8 @@
-mod math;
+mod geometry;
 
 use std::{f32::consts::PI, num::NonZeroU32, rc::Rc};
 
-use math::{Point3, Vec3};
+use geometry::{Hittable, Point3, Vec3};
 use softbuffer::{Buffer, Context, Surface};
 use winit::{
     application::ApplicationHandler,
@@ -16,6 +16,7 @@ struct Scene {
     camera_position: Point3,
     camera_direction: Vec3,
     camera_fov: f32,
+    objects: Vec<Box<dyn Hittable>>,
 }
 
 trait Renderable {
@@ -36,17 +37,11 @@ impl Renderable for Scene {
     }
 }
 
-static TEST_SCENE: Scene = Scene {
-    camera_position: Point3::ZERO,
-    camera_direction: Vec3::new(1., 1., 0.),
-    camera_fov: PI / 2.,
-};
-
-#[derive(Default)]
 struct App {
     window: Option<Rc<Window>>,
     context: Option<Context<Rc<Window>>>,
     surface: Option<Surface<Rc<Window>, Rc<Window>>>,
+    scene: Scene,
 }
 
 impl ApplicationHandler for App {
@@ -103,7 +98,7 @@ impl ApplicationHandler for App {
                     .unwrap();
 
                 let mut buffer = self.surface.as_mut().unwrap().buffer_mut().unwrap();
-                TEST_SCENE.render(&mut buffer, width, height);
+                self.scene.render(&mut buffer, width, height);
                 buffer.present().unwrap();
             }
             _ => (),
@@ -113,6 +108,16 @@ impl ApplicationHandler for App {
 
 fn main() {
     let event_loop = EventLoop::new().unwrap();
-    let mut app = App::default();
+    let mut app = App {
+        window: None,
+        context: None,
+        surface: None,
+        scene: Scene {
+            camera_position: Point3::ZERO,
+            camera_direction: Vec3::new(1., 1., 0.),
+            camera_fov: PI / 2.,
+            objects: vec![],
+        },
+    };
     let _ = event_loop.run_app(&mut app);
 }
