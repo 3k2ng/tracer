@@ -2,7 +2,7 @@ mod geometry;
 
 use std::{f32::consts::PI, num::NonZeroU32, rc::Rc};
 
-use geometry::{Point3, Ray, Renderable, Sphere, Vec3};
+use geometry::{Point, Ray, Renderable, Sphere, Vector};
 use softbuffer::{Buffer, Context, Surface};
 use winit::{
     application::ApplicationHandler,
@@ -13,21 +13,46 @@ use winit::{
 };
 
 struct Scene {
-    camera_position: Point3,
-    camera_direction: Vec3,
-    camera_up: Vec3,
+    camera_position: Point,
+    camera_direction: Vector,
+    camera_up: Vector,
     camera_fov: f32,
     objects: Vec<Box<dyn Renderable>>,
 }
 
 impl Scene {
     fn trace(&self, ray: &Ray) -> u32 {
+        let mut hit = geometry::Hit::Miss;
+        let mut t_min = f32::INFINITY;
+        let mut hit_object: Option<&Box<dyn Renderable>> = None;
         for object in self.objects.iter() {
-            if object.hit(ray).is_some() {
-                return 0xff0000;
+            match object.hit(ray) {
+                geometry::Hit::Miss => (),
+                geometry::Hit::Outside(t) => {
+                    if t < t_min {
+                        hit = geometry::Hit::Outside(t);
+                        t_min = t;
+                        hit_object = Some(object);
+                    }
+                }
+                geometry::Hit::Inside(t) => {
+                    if t < t_min {
+                        hit = geometry::Hit::Inside(t);
+                        t_min = t;
+                        hit_object = Some(object);
+                    }
+                }
             }
         }
-        0xffffff
+        if let geometry::Hit::Miss = hit {
+            0xffffff
+        } else {
+            let normal = hit_object.unwrap().normal(ray, hit).unwrap();
+            let red = (127. * (normal.x + 1.)) as u32;
+            let green = (127. * (normal.y + 1.)) as u32;
+            let blue = (127. * (normal.z + 1.)) as u32;
+            red << 16 | green << 8 | blue
+        }
     }
     fn render(&self, buffer: &mut Buffer<Rc<Window>, Rc<Window>>, width: u32, height: u32) {
         let camera_right = self.camera_direction.cross(self.camera_up).normalize();
@@ -38,7 +63,7 @@ impl Scene {
             let x = (index % width) as f32 - width as f32 / 2.;
             buffer[index as usize] = self.trace(&Ray::new(
                 self.camera_position,
-                (x * camera_right + y * camera_up + l * self.camera_direction).normalize(),
+                (x * camera_right - y * camera_up + l * self.camera_direction).normalize(),
             ));
         }
     }
@@ -120,14 +145,20 @@ fn main() {
         context: None,
         surface: None,
         scene: Scene {
-            camera_position: Point3::ZERO,
-            camera_direction: Vec3::new(0., 1., 0.).normalize(),
-            camera_up: Vec3::new(0., 0., 1.),
-            camera_fov: PI / 2.,
-            objects: vec![Box::new(Sphere {
-                center: Point3::new(0., 20., 0.),
-                radius: 5.,
-            })],
+            camera_position: Point::ZERO,
+            camera_direction: Vector::new(0., 0., -1.).normalize(),
+            camera_up: Vector::new(0., 1., 0.),
+            camera_fov: 2. * PI / 3.,
+            objects: vec![
+                Box::new(Sphere {
+                    center: Point::new(0., 0., -1.),
+                    radius: 0.2,
+                }),
+                Box::new(Sphere {
+                    center: Point::new(0., -100.5, -1.),
+                    radius: 100.,
+                }),
+            ],
         },
     };
     let _ = event_loop.run_app(&mut app);
