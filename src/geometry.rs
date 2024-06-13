@@ -1,7 +1,6 @@
-use std::{
-    any::Any,
-    ops::{Add, Div, Mul, Sub},
-};
+use std::ops::{Add, Div, Mul, Sub};
+
+use rand::Rng;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Vector {
@@ -103,22 +102,65 @@ impl Vector {
             self
         }
     }
+    pub fn random_unit() -> Self {
+        let mut rng = rand::thread_rng();
+        let v = Vector::new(rng.gen(), rng.gen(), rng.gen());
+        if v.length_square() > 0. {
+            v.normalize()
+        } else {
+            Vector::random_unit()
+        }
+    }
+    pub fn random_reflection(self) -> Self {
+        let v = Vector::random_unit();
+        let dp = self.dot(v);
+        if dp > 0. {
+            v
+        } else {
+            v - 2. * dp * self
+        }
+    }
 }
 
 pub type Point = Vector;
 
 #[derive(Debug)]
 pub struct Ray {
-    origin: Point,
-    direction: Vector,
+    pub origin: Point,
+    pub direction: Vector,
 }
 
 impl Ray {
-    pub fn new(origin: Point, direction: Vector) -> Self {
+    pub const fn new(origin: Point, direction: Vector) -> Self {
         Ray { origin, direction }
     }
     pub fn at(&self, t: f32) -> Point {
         self.origin + t * self.direction
+    }
+}
+
+#[derive(Debug)]
+pub struct Interval {
+    pub min: f32,
+    pub max: f32,
+}
+
+impl Interval {
+    pub const RENDER_RANGE: Self = Interval::new(0.001, f32::INFINITY);
+    pub const fn new(min: f32, max: f32) -> Self {
+        Interval { min, max }
+    }
+    pub fn size(&self) -> f32 {
+        self.max - self.min
+    }
+    pub fn contains(&self, x: f32) -> bool {
+        self.min <= x && self.max >= x
+    }
+    pub fn surrounds(&self, x: f32) -> bool {
+        self.min < x && self.max > x
+    }
+    pub fn clamp(&self, x: f32) -> f32 {
+        x.clamp(self.min, self.max)
     }
 }
 
@@ -129,7 +171,7 @@ pub enum Hit {
 }
 
 pub trait Renderable {
-    fn hit(&self, ray: &Ray) -> Hit;
+    fn hit(&self, ray: &Ray, interval: &Interval) -> Hit;
     fn normal(&self, ray: &Ray, hit: Hit) -> Option<Vector>;
 }
 
@@ -139,7 +181,7 @@ pub struct Sphere {
 }
 
 impl Renderable for Sphere {
-    fn hit(&self, ray: &Ray) -> Hit {
+    fn hit(&self, ray: &Ray, interval: &Interval) -> Hit {
         let l = self.center - ray.origin;
         let tca = l.dot(ray.direction);
         let d2 = l.length_square() - tca * tca;
@@ -150,9 +192,9 @@ impl Renderable for Sphere {
             let thc = (r2 - d2).sqrt();
             let t0 = tca - thc;
             let t1 = tca + thc;
-            if t0 > 0. {
+            if interval.surrounds(t0) {
                 Hit::Outside(t0)
-            } else if t1 > 0. {
+            } else if interval.surrounds(t1) {
                 Hit::Inside(t1)
             } else {
                 Hit::Miss
