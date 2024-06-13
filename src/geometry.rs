@@ -111,11 +111,43 @@ pub struct Ray {
 }
 
 impl Ray {
+    pub fn new(origin: Point3, direction: Vec3) -> Self {
+        Ray { origin, direction }
+    }
     pub fn at(&self, t: f32) -> Point3 {
         self.origin + t * self.direction
     }
 }
 
-pub trait Hittable {
-    fn hit(self, ray: Ray) -> Option<f32>;
+pub trait Renderable {
+    fn hit(&self, ray: &Ray) -> Option<f32>;
+}
+
+pub struct Sphere {
+    pub center: Point3,
+    pub radius: f32,
+}
+
+impl Renderable for Sphere {
+    fn hit(&self, ray: &Ray) -> Option<f32> {
+        let l = self.center - ray.origin;
+        let tca = l.dot(ray.direction);
+        let d2 = l.length_square() - tca * tca;
+        if d2 > self.radius * self.radius {
+            None
+        } else {
+            let thc = (self.radius * self.radius - d2).sqrt();
+            let t0 = tca - thc;
+            let t1 = tca + thc;
+            let t_min = if t0 > t1 { t1 } else { t0 };
+            let t_max = if t0 > t1 { t0 } else { t1 };
+            if t_min > 0. {
+                Some(t_min)
+            } else if t_max > 0. {
+                Some(t_max)
+            } else {
+                None
+            }
+        }
+    }
 }

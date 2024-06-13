@@ -2,7 +2,7 @@ mod geometry;
 
 use std::{f32::consts::PI, num::NonZeroU32, rc::Rc};
 
-use geometry::{Hittable, Point3, Vec3};
+use geometry::{Point3, Ray, Renderable, Sphere, Vec3};
 use softbuffer::{Buffer, Context, Surface};
 use winit::{
     application::ApplicationHandler,
@@ -15,24 +15,31 @@ use winit::{
 struct Scene {
     camera_position: Point3,
     camera_direction: Vec3,
+    camera_up: Vec3,
     camera_fov: f32,
-    objects: Vec<Box<dyn Hittable>>,
+    objects: Vec<Box<dyn Renderable>>,
 }
 
-trait Renderable {
-    fn render(&self, buffer: &mut Buffer<Rc<Window>, Rc<Window>>, width: u32, height: u32);
-}
-
-impl Renderable for Scene {
+impl Scene {
+    fn trace(&self, ray: &Ray) -> u32 {
+        for object in self.objects.iter() {
+            if object.hit(ray).is_some() {
+                return 0xff0000;
+            }
+        }
+        0xffffff
+    }
     fn render(&self, buffer: &mut Buffer<Rc<Window>, Rc<Window>>, width: u32, height: u32) {
+        let camera_right = self.camera_direction.cross(self.camera_up).normalize();
+        let camera_up = camera_right.cross(self.camera_direction).normalize();
+        let l = width as f32 / (self.camera_fov / 2.).tan();
         for index in 0..(width * height) {
-            let y = index / width;
-            let x = index % width;
-            let red = x % 255;
-            let green = y % 255;
-            let blue = (x * y) % 255;
-
-            buffer[index as usize] = blue | (green << 8) | (red << 16);
+            let y = (index / width) as f32 - height as f32 / 2.;
+            let x = (index % width) as f32 - width as f32 / 2.;
+            buffer[index as usize] = self.trace(&Ray::new(
+                self.camera_position,
+                (x * camera_right + y * camera_up + l * self.camera_direction).normalize(),
+            ));
         }
     }
 }
@@ -114,9 +121,13 @@ fn main() {
         surface: None,
         scene: Scene {
             camera_position: Point3::ZERO,
-            camera_direction: Vec3::new(1., 1., 0.),
+            camera_direction: Vec3::new(0., 1., 0.).normalize(),
+            camera_up: Vec3::new(0., 0., 1.),
             camera_fov: PI / 2.,
-            objects: vec![],
+            objects: vec![Box::new(Sphere {
+                center: Point3::new(0., 20., 0.),
+                radius: 5.,
+            })],
         },
     };
     let _ = event_loop.run_app(&mut app);
