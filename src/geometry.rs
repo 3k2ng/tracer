@@ -164,15 +164,14 @@ impl Interval {
     }
 }
 
-pub enum Hit {
-    Miss,
-    Outside(f32),
-    Inside(f32),
+pub struct Hit {
+    pub t: f32,
+    pub normal: Vector,
+    pub is_front: bool,
 }
 
-pub trait Renderable {
-    fn hit(&self, ray: &Ray, interval: &Interval) -> Hit;
-    fn normal(&self, ray: &Ray, hit: Hit) -> Option<Vector>;
+pub trait Hittable {
+    fn hit(&self, ray: &Ray, interval: &Interval) -> Option<Hit>;
 }
 
 pub struct Sphere {
@@ -180,33 +179,33 @@ pub struct Sphere {
     pub radius: f32,
 }
 
-impl Renderable for Sphere {
-    fn hit(&self, ray: &Ray, interval: &Interval) -> Hit {
+impl Hittable for Sphere {
+    fn hit(&self, ray: &Ray, interval: &Interval) -> Option<Hit> {
         let l = self.center - ray.origin;
         let tca = l.dot(ray.direction);
         let d2 = l.length_square() - tca * tca;
         let r2 = self.radius * self.radius;
         if d2 > r2 {
-            Hit::Miss
+            None
         } else {
             let thc = (r2 - d2).sqrt();
             let t0 = tca - thc;
             let t1 = tca + thc;
             if interval.surrounds(t0) {
-                Hit::Outside(t0)
+                Some(Hit {
+                    t: t0,
+                    normal: (ray.at(t0) - self.center).normalize(),
+                    is_front: true,
+                })
             } else if interval.surrounds(t1) {
-                Hit::Inside(t1)
+                Some(Hit {
+                    t: t1,
+                    normal: (self.center - ray.at(t1)).normalize(),
+                    is_front: false,
+                })
             } else {
-                Hit::Miss
+                None
             }
-        }
-    }
-
-    fn normal(&self, ray: &Ray, hit: Hit) -> Option<Vector> {
-        match hit {
-            Hit::Miss => None,
-            Hit::Outside(t) => Some((ray.at(t) - self.center).normalize()),
-            Hit::Inside(t) => Some((self.center - ray.at(t)).normalize()),
         }
     }
 }

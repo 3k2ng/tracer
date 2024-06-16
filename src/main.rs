@@ -2,7 +2,7 @@ mod geometry;
 
 use std::{f32::consts::PI, num::NonZeroU32, rc::Rc};
 
-use geometry::{Interval, Point, Ray, Renderable, Sphere, Vector};
+use geometry::{Hit, Hittable, Interval, Point, Ray, Sphere, Vector};
 use rand::Rng;
 use softbuffer::{Buffer, Context, Surface};
 use winit::{
@@ -33,7 +33,7 @@ struct Scene {
     camera_fov: f32,
     antialiasing_samples: u32,
     rendering_depth: u32,
-    objects: Vec<Box<dyn Renderable>>,
+    objects: Vec<Box<dyn Hittable>>,
 }
 
 impl Scene {
@@ -41,39 +41,46 @@ impl Scene {
         if depth == 0 {
             Vector::ZERO
         } else {
-            let mut hit = geometry::Hit::Miss;
-            let mut t_min = interval.max;
-            let mut hit_object: Option<&Box<dyn Renderable>> = None;
+            let mut hit: Option<Hit> = None;
             for object in self.objects.iter() {
+                let t_min = if let Some(Hit {
+                    t,
+                    normal: _,
+                    is_front: _,
+                }) = hit
+                {
+                    t
+                } else {
+                    interval.max
+                };
                 match object.hit(ray, &Interval::new(interval.min, t_min)) {
-                    geometry::Hit::Miss => (),
-                    geometry::Hit::Outside(t) => {
-                        if t < t_min {
-                            hit = geometry::Hit::Outside(t);
-                            t_min = t;
-                            hit_object = Some(object);
-                        }
-                    }
-                    geometry::Hit::Inside(t) => {
-                        if t < t_min {
-                            hit = geometry::Hit::Inside(t);
-                            t_min = t;
-                            hit_object = Some(object);
+                    None => (),
+                    Some(h) => {
+                        if h.t < t_min {
+                            hit = Some(h);
                         }
                     }
                 }
             }
-            if let geometry::Hit::Miss = hit {
+            if let Some(Hit {
+                t,
+                normal,
+                is_front,
+            }) = hit
+            {
+                self.trace(
+                    &Ray::new(ray.at(t), normal.random_reflection()),
+                    interval,
+                    depth - 1,
+                ) * 0.5
+            } else {
                 let a = 0.5 * (ray.direction.y + 1.0);
                 (1.0 - a) * Vector::new(1.0, 1.0, 1.0) + a * Vector::new(0.5, 0.7, 1.0)
-            } else {
-                let normal = hit_object.unwrap().normal(ray, hit).unwrap();
-                let reflection = normal.random_reflection();
-                self.trace(&Ray::new(ray.at(t_min), reflection), interval, depth - 1) * 0.5
             }
         }
     }
     fn render(&self, buffer: &mut Buffer<Rc<Window>, Rc<Window>>, width: u32, height: u32) {
+        let start_time = std::time::SystemTime::now();
         let camera_right = self.camera_direction.cross(self.camera_up).normalize();
         let camera_up = camera_right.cross(self.camera_direction).normalize();
         let l = width as f32 / (self.camera_fov / 2.).tan();
@@ -111,6 +118,13 @@ impl Scene {
                 buffer[index as usize] = vec_color(pixel);
             }
         }
+        let end_time = std::time::SystemTime::now();
+        let duration = end_time.duration_since(start_time).unwrap();
+        println!(
+            "render time for {width}x{height}: {}ms ({}s)",
+            duration.as_millis(),
+            duration.as_secs_f64(),
+        );
     }
 }
 
@@ -204,8 +218,8 @@ fn main() {
                     radius: 100.,
                 }),
             ],
-            antialiasing_samples: 256,
-            rendering_depth: 32,
+            antialiasing_samples: 1024,
+            rendering_depth: 64,
         },
     };
     let _ = event_loop.run_app(&mut app);
