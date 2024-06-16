@@ -1,8 +1,12 @@
-use std::ops::{Add, Div, Mul, Sub};
+use std::{
+    ops::{Add, Div, Mul, Sub},
+    rc::Rc,
+};
 
-use rand::Rng;
+use rand::{thread_rng, Rng};
 
 #[derive(Clone, Copy, Debug)]
+#[repr(C)]
 pub struct Vector {
     pub x: f32,
     pub y: f32,
@@ -29,6 +33,18 @@ impl Sub for Vector {
             x: self.x - rhs.x,
             y: self.y - rhs.y,
             z: self.z - rhs.z,
+        }
+    }
+}
+
+impl Mul for Vector {
+    type Output = Self;
+
+    fn mul(self, rhs: Self) -> Self::Output {
+        Vector {
+            x: self.x * rhs.x,
+            y: self.y * rhs.y,
+            z: self.z * rhs.z,
         }
     }
 }
@@ -111,14 +127,17 @@ impl Vector {
             Vector::random_unit()
         }
     }
-    pub fn random_reflection(self) -> Self {
-        let v = Vector::random_unit();
-        let dp = self.dot(v);
-        if dp > 0. {
-            v
-        } else {
-            v - 2. * dp * self
-        }
+    pub fn near_zero(self) -> bool {
+        self.x.abs() < 1e-8 && self.y.abs() < 1e-8 && self.z.abs() < 1e-8
+    }
+    pub fn reflect(self, normal: Self) -> Self {
+        self - 2. * self.dot(normal) * normal
+    }
+    pub fn refract(self, normal: Self, etai_over_etat: f32) -> Self {
+        let cos_theta = f32::min((-1. * self).dot(normal), 1.);
+        let r_out_perp = etai_over_etat * (self + cos_theta * normal);
+        let r_out_parallel = -(1. - r_out_perp.length_square()).sqrt() * normal;
+        r_out_perp + r_out_parallel
     }
 }
 
@@ -146,21 +165,12 @@ pub struct Interval {
 }
 
 impl Interval {
-    pub const RENDER_RANGE: Self = Interval::new(0.001, f32::INFINITY);
+    pub const RENDER_RANGE: Self = Interval::new(1e-4, f32::INFINITY);
     pub const fn new(min: f32, max: f32) -> Self {
         Interval { min, max }
     }
-    pub fn size(&self) -> f32 {
-        self.max - self.min
-    }
-    pub fn contains(&self, x: f32) -> bool {
-        self.min <= x && self.max >= x
-    }
     pub fn surrounds(&self, x: f32) -> bool {
         self.min < x && self.max > x
-    }
-    pub fn clamp(&self, x: f32) -> f32 {
-        x.clamp(self.min, self.max)
     }
 }
 
@@ -208,4 +218,127 @@ impl Hittable for Sphere {
             }
         }
     }
+}
+
+fn color(r: f32, g: f32, b: f32) -> u32 {
+    let red = (r * 255.) as u32;
+    let green = (g * 255.) as u32;
+    let blue = (b * 255.) as u32;
+    red << 16 | green << 8 | blue
+}
+
+pub type Color = Vector;
+
+pub fn gamma(c: Color) -> u32 {
+    color(c.x.sqrt(), c.y.sqrt(), c.z.sqrt())
+}
+
+pub struct Scatter {
+    pub attenuation: Color,
+    pub scattered: Ray,
+}
+
+pub trait Material {
+    fn scatter(&self, ray: &Ray, rec: &Hit) -> Option<Scatter>;
+}
+
+pub struct Lambertian {
+    albedo: Color,
+}
+
+impl Lambertian {
+    pub fn new(albedo: Color) -> Self {
+        Self { albedo }
+    }
+}
+
+impl Material for Lambertian {
+    fn scatter(&self, ray: &Ray, rec: &Hit) -> Option<Scatter> {
+        let scatter_direction = rec.normal + Vector::random_unit();
+        let scatter_direction = if scatter_direction.near_zero() {
+            rec.normal
+        } else {
+            scatter_direction
+        };
+        Some(Scatter {
+            attenuation: self.albedo,
+            scattered: Ray {
+                origin: ray.at(rec.t),
+                direction: scatter_direction.normalize(),
+            },
+        })
+    }
+}
+
+pub struct Metal {
+    albedo: Color,
+    fuzz: f32,
+}
+
+impl Metal {
+    pub fn new(albedo: Color, fuzz: f32) -> Self {
+        Self {
+            albedo,
+            fuzz: fuzz.clamp(0., 1.),
+        }
+    }
+}
+
+impl Material for Metal {
+    fn scatter(&self, ray: &Ray, rec: &Hit) -> Option<Scatter> {
+        let reflected = ray.direction.reflect(rec.normal) + self.fuzz * Vector::random_unit();
+        Some(Scatter {
+            attenuation: self.albedo,
+            scattered: Ray {
+                origin: ray.at(rec.t),
+                direction: reflected,
+            },
+        })
+    }
+}
+
+pub struct Dielectric {
+    refraction_index: f32,
+}
+
+impl Dielectric {
+    pub fn new(refraction_index: f32) -> Self {
+        Self { refraction_index }
+    }
+    fn reflectance(cosine: f32, refraction_index: f32) -> f32 {
+        let r0 = (1. - refraction_index) / (1. + refraction_index);
+        let r0 = r0 * r0;
+        r0 + (1. - r0) * (1. - cosine).powi(5)
+    }
+}
+
+impl Material for Dielectric {
+    fn scatter(&self, ray: &Ray, rec: &Hit) -> Option<Scatter> {
+        let ri = if rec.is_front {
+            1. / self.refraction_index
+        } else {
+            self.refraction_index
+        };
+        let cos_theta = f32::min((-1. * ray.direction).dot(rec.normal), 1.);
+        let sin_theta = (1. - cos_theta * cos_theta).sqrt();
+        let cannot_refract = ri * sin_theta > 1.;
+        Some(Scatter {
+            attenuation: Color::new(1., 1., 1.),
+            scattered: Ray {
+                origin: ray.at(rec.t),
+                direction: if cannot_refract
+                    || Dielectric::reflectance(cos_theta, ri) > thread_rng().gen()
+                {
+                    ray.direction.reflect(rec.normal)
+                } else {
+                    ray.direction.refract(rec.normal, ri)
+                },
+            },
+        })
+    }
+}
+
+pub struct Object {
+    pub shape: Box<dyn Hittable>,
+    pub material: Rc<dyn Material>,
 }

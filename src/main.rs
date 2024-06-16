@@ -2,7 +2,10 @@ mod geometry;
 
 use std::{f32::consts::PI, num::NonZeroU32, rc::Rc};
 
-use geometry::{Hit, Hittable, Interval, Point, Ray, Sphere, Vector};
+use geometry::{
+    gamma, Color, Dielectric, Hit, Interval, Lambertian, Material, Metal, Object, Point, Ray,
+    Scatter, Sphere, Vector,
+};
 use rand::Rng;
 use softbuffer::{Buffer, Context, Surface};
 use winit::{
@@ -13,27 +16,14 @@ use winit::{
     window::Window,
 };
 
-fn color(r: f32, g: f32, b: f32) -> u32 {
-    let red = (r * 255.) as u32;
-    let green = (g * 255.) as u32;
-    let blue = (b * 255.) as u32;
-    red << 16 | green << 8 | blue
-}
-
-type Color = Vector;
-
-fn vec_color(c: Color) -> u32 {
-    color(c.x, c.y, c.z)
-}
-
 struct Scene {
     camera_position: Point,
     camera_direction: Vector,
     camera_up: Vector,
     camera_fov: f32,
-    antialiasing_samples: u32,
-    rendering_depth: u32,
-    objects: Vec<Box<dyn Hittable>>,
+    samples: u32,
+    depth: u32,
+    objects: Vec<Object>,
 }
 
 impl Scene {
@@ -42,6 +32,7 @@ impl Scene {
             Vector::ZERO
         } else {
             let mut hit: Option<Hit> = None;
+            let mut material: Option<Rc<dyn Material>> = None;
             for object in self.objects.iter() {
                 let t_min = if let Some(Hit {
                     t,
@@ -53,26 +44,26 @@ impl Scene {
                 } else {
                     interval.max
                 };
-                match object.hit(ray, &Interval::new(interval.min, t_min)) {
+                match object.shape.hit(ray, &Interval::new(interval.min, t_min)) {
                     None => (),
                     Some(h) => {
                         if h.t < t_min {
                             hit = Some(h);
+                            material = Some(object.material.clone());
                         }
                     }
                 }
             }
-            if let Some(Hit {
-                t,
-                normal,
-                is_front,
-            }) = hit
-            {
-                self.trace(
-                    &Ray::new(ray.at(t), normal.random_reflection()),
-                    interval,
-                    depth - 1,
-                ) * 0.5
+            if let Some(h) = hit {
+                if let Some(Scatter {
+                    attenuation,
+                    scattered,
+                }) = material.unwrap().scatter(ray, &h)
+                {
+                    self.trace(&scattered, interval, depth - 1) * attenuation
+                } else {
+                    Vector::ZERO
+                }
             } else {
                 let a = 0.5 * (ray.direction.y + 1.0);
                 (1.0 - a) * Vector::new(1.0, 1.0, 1.0) + a * Vector::new(0.5, 0.7, 1.0)
@@ -80,27 +71,26 @@ impl Scene {
         }
     }
     fn render(&self, buffer: &mut Buffer<Rc<Window>, Rc<Window>>, width: u32, height: u32) {
-        let start_time = std::time::SystemTime::now();
         let camera_right = self.camera_direction.cross(self.camera_up).normalize();
         let camera_up = camera_right.cross(self.camera_direction).normalize();
         let l = width as f32 / (self.camera_fov / 2.).tan();
-        let contribution = 1.0 / (self.antialiasing_samples as f32);
+        let contribution = 1.0 / (self.samples as f32);
         let mut rng = rand::thread_rng();
         for index in 0..(width * height) {
             let y = (index / width) as f32 - height as f32 / 2.;
             let x = (index % width) as f32 - width as f32 / 2.;
-            if self.antialiasing_samples == 1 {
-                buffer[index as usize] = vec_color(self.trace(
+            if self.samples == 1 {
+                buffer[index as usize] = gamma(self.trace(
                     &Ray::new(
                         self.camera_position,
                         (x * camera_right - y * camera_up + l * self.camera_direction).normalize(),
                     ),
                     &Interval::RENDER_RANGE,
-                    self.rendering_depth,
+                    self.depth,
                 ));
             } else {
                 let mut pixel = Color::ZERO;
-                for _ in 0..self.antialiasing_samples {
+                for _ in 0..self.samples {
                     pixel = pixel
                         + contribution
                             * self.trace(
@@ -112,19 +102,12 @@ impl Scene {
                                         .normalize(),
                                 ),
                                 &Interval::RENDER_RANGE,
-                                self.rendering_depth,
+                                self.depth,
                             );
                 }
-                buffer[index as usize] = vec_color(pixel);
+                buffer[index as usize] = gamma(pixel);
             }
         }
-        let end_time = std::time::SystemTime::now();
-        let duration = end_time.duration_since(start_time).unwrap();
-        println!(
-            "render time for {width}x{height}: {}ms ({}s)",
-            duration.as_millis(),
-            duration.as_secs_f64(),
-        );
     }
 }
 
@@ -155,7 +138,7 @@ impl ApplicationHandler for App {
     fn window_event(
         &mut self,
         event_loop: &winit::event_loop::ActiveEventLoop,
-        window_id: winit::window::WindowId,
+        _window_id: winit::window::WindowId,
         event: winit::event::WindowEvent,
     ) {
         match event {
@@ -199,6 +182,11 @@ impl ApplicationHandler for App {
 
 fn main() {
     let event_loop = EventLoop::new().unwrap();
+    let material_ground = Rc::new(Lambertian::new(Color::new(0.8, 0.8, 0.0)));
+    let material_center = Rc::new(Lambertian::new(Color::new(0.1, 0.2, 0.5)));
+    let material_left = Rc::new(Dielectric::new(1.5));
+    let material_bubble = Rc::new(Dielectric::new(1. / 1.5));
+    let material_right = Rc::new(Metal::new(Color::new(0.8, 0.6, 0.2), 1.0));
     let mut app = App {
         window: None,
         context: None,
@@ -207,19 +195,47 @@ fn main() {
             camera_position: Point::ZERO,
             camera_direction: Vector::new(0., 0., -1.).normalize(),
             camera_up: Vector::new(0., 1., 0.),
-            camera_fov: 2. * PI / 3.,
+            camera_fov: 3. * PI / 4.,
             objects: vec![
-                Box::new(Sphere {
-                    center: Point::new(0., 0., -1.),
-                    radius: 0.5,
-                }),
-                Box::new(Sphere {
-                    center: Point::new(0., -100.5, -1.),
-                    radius: 100.,
-                }),
+                Object {
+                    shape: Box::new(Sphere {
+                        center: Point::new(0.0, -100.5, -1.0),
+                        radius: 100.0,
+                    }),
+                    material: material_ground.clone(),
+                },
+                Object {
+                    shape: Box::new(Sphere {
+                        center: Point::new(0.0, 0.0, -1.2),
+                        radius: 0.5,
+                    }),
+                    material: material_center.clone(),
+                },
+                Object {
+                    shape: Box::new(Sphere {
+                        center: Point::new(-1.0, 0.0, -1.0),
+                        radius: 0.5,
+                    }),
+                    material: material_left.clone(),
+                },
+                Object {
+                    shape: Box::new(Sphere {
+                        center: Point::new(-1.0, 0.0, -1.0),
+                        radius: 0.4,
+                    }),
+                    material: material_bubble.clone(),
+                },
+                Object {
+                    shape: Box::new(Sphere {
+                        center: Point::new(1.0, 0.0, -1.0),
+                        radius: 0.5,
+                    }),
+                    material: material_right.clone(),
+                },
             ],
-            antialiasing_samples: 1024,
-            rendering_depth: 64,
+
+            samples: 32,
+            depth: 32,
         },
     };
     let _ = event_loop.run_app(&mut app);
