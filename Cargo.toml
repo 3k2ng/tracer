@@ -4,8 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-bytemuck = "1.16.0"
 rand = "0.8.5"
+rayon = "1.10.0"
 softbuffer = "0.4.4"
-wide = "0.7.24"
 winit = "0.30.1"

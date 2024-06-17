@@ -1,15 +1,17 @@
 mod geometry;
 
-use std::{f32::consts::PI, num::NonZeroU32, rc::Rc};
+use std::{f32::consts::PI, num::NonZeroU32, rc::Rc, sync::Arc, time::SystemTime};
 
 use geometry::{
-    gamma, Color, Dielectric, Hit, Interval, Lambertian, Material, Metal, Object, Point, Ray,
-    Scatter, Sphere, Vector,
+    gamma, Color, Dielectric, Hit, Interval, Lambertian, Light, Material, Metal, Object, Point,
+    Ray, Sphere, Vector,
 };
 use rand::Rng;
+use rayon::iter::{IndexedParallelIterator, IntoParallelRefMutIterator, ParallelIterator};
 use softbuffer::{Buffer, Context, Surface};
 use winit::{
     application::ApplicationHandler,
+    dpi::PhysicalSize,
     event::{ElementState, KeyEvent, WindowEvent},
     event_loop::EventLoop,
     keyboard::{KeyCode, PhysicalKey},
@@ -21,7 +23,7 @@ struct Scene {
     camera_direction: Vector,
     camera_up: Vector,
     camera_fov: f32,
-    samples: u32,
+    max_samples: u32,
     depth: u32,
     objects: Vec<Object>,
 }
@@ -32,7 +34,7 @@ impl Scene {
             Vector::ZERO
         } else {
             let mut hit: Option<Hit> = None;
-            let mut material: Option<Rc<dyn Material>> = None;
+            let mut material: Option<Arc<dyn Material>> = None;
             for object in self.objects.iter() {
                 let t_min = if let Some(Hit {
                     t,
@@ -55,43 +57,37 @@ impl Scene {
                 }
             }
             if let Some(h) = hit {
-                if let Some(Scatter {
-                    attenuation,
-                    scattered,
-                }) = material.unwrap().scatter(ray, &h)
-                {
-                    self.trace(&scattered, interval, depth - 1) * attenuation
-                } else {
-                    Vector::ZERO
+                match material.unwrap().on_hit(ray, &h) {
+                    geometry::OnHit::None => Vector::ZERO,
+                    geometry::OnHit::Scatter {
+                        attenuation,
+                        scattered,
+                    } => self.trace(&scattered, interval, depth - 1) * attenuation,
+                    geometry::OnHit::Emitted { color } => color,
                 }
             } else {
-                let a = 0.5 * (ray.direction.y + 1.0);
-                (1.0 - a) * Vector::new(1.0, 1.0, 1.0) + a * Vector::new(0.5, 0.7, 1.0)
+                // let a = 0.5 * (ray.direction.y + 1.0);
+                // (1.0 - a) * Vector::new(1.0, 1.0, 1.0) + a * Vector::new(0.5, 0.7, 1.0)
+                Color::ZERO
             }
         }
     }
     fn render(&self, buffer: &mut Buffer<Rc<Window>, Rc<Window>>, width: u32, height: u32) {
+        let start_time = SystemTime::now();
         let camera_right = self.camera_direction.cross(self.camera_up).normalize();
         let camera_up = camera_right.cross(self.camera_direction).normalize();
         let l = width as f32 / (self.camera_fov / 2.).tan();
-        let contribution = 1.0 / (self.samples as f32);
-        let mut rng = rand::thread_rng();
-        for index in 0..(width * height) {
-            let y = (index / width) as f32 - height as f32 / 2.;
-            let x = (index % width) as f32 - width as f32 / 2.;
-            if self.samples == 1 {
-                buffer[index as usize] = gamma(self.trace(
-                    &Ray::new(
-                        self.camera_position,
-                        (x * camera_right - y * camera_up + l * self.camera_direction).normalize(),
-                    ),
-                    &Interval::RENDER_RANGE,
-                    self.depth,
-                ));
-            } else {
-                let mut pixel = Color::ZERO;
-                for _ in 0..self.samples {
-                    pixel = pixel
+        let contribution = 1.0 / (self.max_samples as f32);
+        buffer
+            .par_iter_mut()
+            .zip(0..width * height)
+            .for_each(|(pixel, index)| {
+                let mut rng = rand::thread_rng();
+                let y = (index / width) as f32 - height as f32 / 2.;
+                let x = (index % width) as f32 - width as f32 / 2.;
+                let mut vec_pixel = Color::ZERO;
+                for _ in 0..self.max_samples {
+                    vec_pixel = vec_pixel
                         + contribution
                             * self.trace(
                                 &Ray::new(
@@ -105,9 +101,13 @@ impl Scene {
                                 self.depth,
                             );
                 }
-                buffer[index as usize] = gamma(pixel);
-            }
-        }
+                *pixel = gamma(vec_pixel);
+            });
+        let end_time = SystemTime::now();
+        println!(
+            "{}s",
+            end_time.duration_since(start_time).unwrap().as_secs_f64()
+        );
     }
 }
 
@@ -122,7 +122,11 @@ impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
         self.window = Some(Rc::new(
             event_loop
-                .create_window(Window::default_attributes())
+                .create_window(
+                    Window::default_attributes()
+                        .with_inner_size(PhysicalSize::new(800, 450))
+                        .with_resizable(false),
+                )
                 .unwrap(),
         ));
         self.context = Some(Context::new(self.window.as_ref().unwrap().clone()).unwrap());
@@ -182,11 +186,11 @@ impl ApplicationHandler for App {
 
 fn main() {
     let event_loop = EventLoop::new().unwrap();
-    let material_ground = Rc::new(Lambertian::new(Color::new(0.8, 0.8, 0.0)));
-    let material_center = Rc::new(Lambertian::new(Color::new(0.1, 0.2, 0.5)));
-    let material_left = Rc::new(Dielectric::new(1.5));
-    let material_bubble = Rc::new(Dielectric::new(1. / 1.5));
-    let material_right = Rc::new(Metal::new(Color::new(0.8, 0.6, 0.2), 1.0));
+    let material_ground = Arc::new(Lambertian::new(Color::new(0.8, 0.8, 0.8)));
+    let material_center = Arc::new(Light::new(Color::new(5.0, 8.0, 10.0)));
+    let material_left = Arc::new(Dielectric::new(1.5));
+    let material_bubble = Arc::new(Dielectric::new(1. / 1.5));
+    let material_right = Arc::new(Metal::new(Color::new(0.8, 0.6, 0.2), 0.0));
     let mut app = App {
         window: None,
         context: None,
@@ -206,7 +210,7 @@ fn main() {
                 },
                 Object {
                     shape: Box::new(Sphere {
-                        center: Point::new(0.0, 0.0, -1.2),
+                        center: Point::new(0.0, 0.5, -1.2),
                         radius: 0.5,
                     }),
                     material: material_center.clone(),
@@ -233,8 +237,7 @@ fn main() {
                     material: material_right.clone(),
                 },
             ],
-
-            samples: 32,
+            max_samples: 256,
             depth: 32,
         },
     };

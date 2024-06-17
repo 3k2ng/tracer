@@ -1,6 +1,6 @@
 use std::{
     ops::{Add, Div, Mul, Sub},
-    rc::Rc,
+    sync::Arc,
 };
 
 use rand::{thread_rng, Rng};
@@ -119,12 +119,12 @@ impl Vector {
         }
     }
     pub fn random_unit() -> Self {
-        let mut rng = rand::thread_rng();
-        let v = Vector::new(rng.gen(), rng.gen(), rng.gen());
-        if v.length_square() > 0. {
-            v.normalize()
-        } else {
-            Vector::random_unit()
+        loop {
+            let mut rng = rand::thread_rng();
+            let v = Vector::new(rng.gen(), rng.gen(), rng.gen());
+            if v.length_square() > 0. && v.length_square() < 1. {
+                return v.normalize();
+            }
         }
     }
     pub fn near_zero(self) -> bool {
@@ -136,7 +136,7 @@ impl Vector {
     pub fn refract(self, normal: Self, etai_over_etat: f32) -> Self {
         let cos_theta = f32::min((-1. * self).dot(normal), 1.);
         let r_out_perp = etai_over_etat * (self + cos_theta * normal);
-        let r_out_parallel = -(1. - r_out_perp.length_square()).sqrt() * normal;
+        let r_out_parallel = -(1. - r_out_perp.length_square()).abs().sqrt() * normal;
         r_out_perp + r_out_parallel
     }
 }
@@ -221,9 +221,9 @@ impl Hittable for Sphere {
 }
 
 fn color(r: f32, g: f32, b: f32) -> u32 {
-    let red = (r * 255.) as u32;
-    let green = (g * 255.) as u32;
-    let blue = (b * 255.) as u32;
+    let red = (r.clamp(0., 1.) * 255.) as u32;
+    let green = (g.clamp(0., 1.) * 255.) as u32;
+    let blue = (b.clamp(0., 1.) * 255.) as u32;
     red << 16 | green << 8 | blue
 }
 
@@ -233,13 +233,14 @@ pub fn gamma(c: Color) -> u32 {
     color(c.x.sqrt(), c.y.sqrt(), c.z.sqrt())
 }
 
-pub struct Scatter {
-    pub attenuation: Color,
-    pub scattered: Ray,
+pub enum OnHit {
+    None,
+    Scatter { attenuation: Color, scattered: Ray },
+    Emitted { color: Color },
 }
 
 pub trait Material {
-    fn scatter(&self, ray: &Ray, rec: &Hit) -> Option<Scatter>;
+    fn on_hit(&self, ray: &Ray, rec: &Hit) -> OnHit;
 }
 
 pub struct Lambertian {
@@ -253,20 +254,20 @@ impl Lambertian {
 }
 
 impl Material for Lambertian {
-    fn scatter(&self, ray: &Ray, rec: &Hit) -> Option<Scatter> {
+    fn on_hit(&self, ray: &Ray, rec: &Hit) -> OnHit {
         let scatter_direction = rec.normal + Vector::random_unit();
         let scatter_direction = if scatter_direction.near_zero() {
             rec.normal
         } else {
             scatter_direction
         };
-        Some(Scatter {
+        OnHit::Scatter {
             attenuation: self.albedo,
             scattered: Ray {
                 origin: ray.at(rec.t),
                 direction: scatter_direction.normalize(),
             },
-        })
+        }
     }
 }
 
@@ -285,15 +286,19 @@ impl Metal {
 }
 
 impl Material for Metal {
-    fn scatter(&self, ray: &Ray, rec: &Hit) -> Option<Scatter> {
+    fn on_hit(&self, ray: &Ray, rec: &Hit) -> OnHit {
         let reflected = ray.direction.reflect(rec.normal) + self.fuzz * Vector::random_unit();
-        Some(Scatter {
-            attenuation: self.albedo,
-            scattered: Ray {
-                origin: ray.at(rec.t),
-                direction: reflected,
-            },
-        })
+        if reflected.dot(rec.normal) > 0. {
+            OnHit::Scatter {
+                attenuation: self.albedo,
+                scattered: Ray {
+                    origin: ray.at(rec.t),
+                    direction: reflected,
+                },
+            }
+        } else {
+            OnHit::None
+        }
     }
 }
 
@@ -313,7 +318,7 @@ impl Dielectric {
 }
 
 impl Material for Dielectric {
-    fn scatter(&self, ray: &Ray, rec: &Hit) -> Option<Scatter> {
+    fn on_hit(&self, ray: &Ray, rec: &Hit) -> OnHit {
         let ri = if rec.is_front {
             1. / self.refraction_index
         } else {
@@ -322,7 +327,7 @@ impl Material for Dielectric {
         let cos_theta = f32::min((-1. * ray.direction).dot(rec.normal), 1.);
         let sin_theta = (1. - cos_theta * cos_theta).sqrt();
         let cannot_refract = ri * sin_theta > 1.;
-        Some(Scatter {
+        OnHit::Scatter {
             attenuation: Color::new(1., 1., 1.),
             scattered: Ray {
                 origin: ray.at(rec.t),
@@ -334,11 +339,27 @@ impl Material for Dielectric {
                     ray.direction.refract(rec.normal, ri)
                 },
             },
-        })
+        }
+    }
+}
+
+pub struct Light {
+    color: Color,
+}
+
+impl Light {
+    pub fn new(color: Color) -> Self {
+        Self { color }
+    }
+}
+
+impl Material for Light {
+    fn on_hit(&self, _ray: &Ray, _rec: &Hit) -> OnHit {
+        OnHit::Emitted { color: self.color }
     }
 }
 
 pub struct Object {
-    pub shape: Box<dyn Hittable>,
-    pub material: Rc<dyn Material>,
+    pub shape: Box<dyn Hittable + Sync>,
+    pub material: Arc<dyn Material + Sync + Send>,
 }
